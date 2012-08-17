@@ -241,6 +241,9 @@
 #define PW_PACKET_TRANSMIT_COUNTER	1134
 #define PW_CACHED_SESSION_POLICY	1135
 
+#define PW_EAP_TLS_OFFER_ALT		1140
+#define PW_EAP_TLS_TAKEN_ALT		1141
+
 /*
  *	Integer Translations
  */

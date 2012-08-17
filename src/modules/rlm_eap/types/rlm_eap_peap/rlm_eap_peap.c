@@ -70,6 +70,21 @@ typedef struct rlm_eap_peap_t {
 	 */
 	int	soh;
   	char	*soh_virtual_server;
+
+	/*
+	 *	Alternate TLS configurations for compliance testing
+	 */
+	char	*tls_conf_name_1;
+	fr_tls_server_conf_t *tls_conf_1;
+
+	char	*tls_conf_name_2;
+	fr_tls_server_conf_t *tls_conf_2;
+
+	char	*tls_conf_name_3;
+	fr_tls_server_conf_t *tls_conf_3;
+
+	char	*tls_conf_name_4;
+	fr_tls_server_conf_t *tls_conf_4;
 } rlm_eap_peap_t;
 
 
@@ -99,6 +114,18 @@ static CONF_PARSER module_config[] = {
 
 	{ "soh_virtual_server", PW_TYPE_STRING_PTR,
 	  offsetof(rlm_eap_peap_t, soh_virtual_server), NULL, NULL },
+
+	{ "alt_tls_1", PW_TYPE_STRING_PTR,
+	  offsetof(rlm_eap_peap_t, tls_conf_name_1), NULL, NULL },
+
+	{ "alt_tls_2", PW_TYPE_STRING_PTR,
+	  offsetof(rlm_eap_peap_t, tls_conf_name_2), NULL, NULL },
+
+	{ "alt_tls_3", PW_TYPE_STRING_PTR,
+	  offsetof(rlm_eap_peap_t, tls_conf_name_3), NULL, NULL },
+
+	{ "alt_tls_4", PW_TYPE_STRING_PTR,
+	  offsetof(rlm_eap_peap_t, tls_conf_name_4), NULL, NULL },
 
  	{ NULL, -1, 0, NULL, NULL }           /* end the list */
 };
@@ -161,6 +188,15 @@ static int eappeap_attach(CONF_SECTION *cs, void **instance)
 		return -1;
 	}
 
+	inst->tls_conf_1 = eaptls_conf_parse(cs, "alt_tls_1");
+	if (!inst->tls_conf_1) inst->tls_conf_1 = inst->tls_conf;
+	inst->tls_conf_2 = eaptls_conf_parse(cs, "alt_tls_2");
+	if (!inst->tls_conf_2) inst->tls_conf_2 = inst->tls_conf;
+	inst->tls_conf_3 = eaptls_conf_parse(cs, "alt_tls_3");
+	if (!inst->tls_conf_3) inst->tls_conf_3 = inst->tls_conf;
+	inst->tls_conf_4 = eaptls_conf_parse(cs, "alt_tls_4");
+	if (!inst->tls_conf_4) inst->tls_conf_4 = inst->tls_conf;
+
 	*instance = inst;
 
 	return 0;
@@ -216,6 +252,7 @@ static int eappeap_initiate(void *type_arg, EAP_HANDLER *handler)
 	int		status;
 	tls_session_t	*ssn;
 	rlm_eap_peap_t	*inst;
+	fr_tls_server_conf_t *tls_conf;
 	VALUE_PAIR	*vp;
 	int		client_cert = FALSE;
 	REQUEST		*request = handler->request;
@@ -236,7 +273,35 @@ static int eappeap_initiate(void *type_arg, EAP_HANDLER *handler)
 		client_cert = vp->vp_integer;
 	}
 
-	ssn = eaptls_session(inst->tls_conf, handler, client_cert);
+	tls_conf = inst->tls_conf;
+
+	vp = pairfind(handler->request->config_items,
+		      PW_EAP_TLS_OFFER_ALT, 0);
+	if (vp) {
+		char *tls_conf_name = NULL;
+		if (!strcmp(vp->vp_strvalue,"alt_tls_1")) {
+			tls_conf = inst->tls_conf_1;
+			tls_conf_name = inst->tls_conf_name_1;
+		}
+		if (!strcmp(vp->vp_strvalue,"alt_tls_2")) {
+			tls_conf = inst->tls_conf_2;
+			tls_conf_name = inst->tls_conf_name_2;
+		}
+		if (!strcmp(vp->vp_strvalue,"alt_tls_3")) {
+			tls_conf = inst->tls_conf_3;
+			tls_conf_name = inst->tls_conf_name_3;
+		}
+		if (!strcmp(vp->vp_strvalue,"alt_tls_4")) {
+			tls_conf = inst->tls_conf_4;
+			tls_conf_name = inst->tls_conf_name_4;
+		}
+		if (tls_conf != inst->tls_conf) {
+			RDEBUG2("Using alternative TLS config %s.",
+				tls_conf_name);
+		}
+	}
+
+	ssn = eaptls_session(tls_conf, handler, client_cert);
 	if (!ssn) {
 		return 0;
 	}
@@ -294,6 +359,7 @@ static int eappeap_authenticate(void *arg, EAP_HANDLER *handler)
 	fr_tls_status_t status;
 	rlm_eap_peap_t *inst = (rlm_eap_peap_t *) arg;
 	tls_session_t *tls_session = (tls_session_t *) handler->opaque;
+	fr_tls_server_conf_t *tls_conf;
 	peap_tunnel_t *peap = tls_session->opaque;
 	REQUEST *request = handler->request;
 
@@ -349,6 +415,28 @@ static int eappeap_authenticate(void *arg, EAP_HANDLER *handler)
 	default:
 		RDEBUG2("FR_TLS_OTHERS");
 		return 0;
+	}
+
+	/*
+	 *	See if we were testing the client with a bad certificate.
+	 *	If we were, and we get here, the client is not properly
+	 *	validating our certs, so record that fact for followup action.
+	 */
+	tls_conf = (fr_tls_server_conf_t *)
+		SSL_get_ex_data(tls_session->ssl, FR_TLS_EX_INDEX_CONF);
+	if (tls_conf != inst->tls_conf) {
+		const char *tls_conf_name = "unknown";
+		VALUE_PAIR *vp;
+		if (tls_conf == inst->tls_conf_1)
+			tls_conf_name = inst->tls_conf_name_1;
+		if (tls_conf == inst->tls_conf_2)
+			tls_conf_name = inst->tls_conf_name_2;
+		if (tls_conf == inst->tls_conf_3)
+			tls_conf_name = inst->tls_conf_name_3;
+		if (tls_conf == inst->tls_conf_4)
+			tls_conf_name = inst->tls_conf_name_4;
+		vp = pairmake("EAP-TLS-Taken-Alt", tls_conf_name, T_OP_EQ);
+		if (vp) pairadd(&handler->request->config_items, vp);
 	}
 
 	/*

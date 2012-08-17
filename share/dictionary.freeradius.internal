@@ -224,6 +224,10 @@ ATTRIBUTE	MS-CHAP-New-NT-Password			1137	octets
 ATTRIBUTE	Stripped-User-Domain			1138	string
 ATTRIBUTE	Called-Station-SSID			1139	string
 
+#       For client compliance testing, to ensure client is validating
+ATTRIBUTE	EAP-TLS-Offer-Alt			1140	string
+ATTRIBUTE	EAP-TLS-Taken-Alt			1141	string
+
 #
 #	Range:	1200-1279
 #		EAP-SIM (and other EAP type) weirdness.
