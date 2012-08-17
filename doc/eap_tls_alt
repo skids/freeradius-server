@@ -1,0 +1,92 @@
+
+The EAP-TLS-Offer-Alt and EAP-TLS-Taken-Alt attributes are intended to
+be used to verify, from the server side, whether particular clients are
+validating the server certificate in PEAP and TTLS setups.  If clients
+do not verify the offered server cert, this opens them up to MITM attacks
+from interlopers posing as enterprise APs.
+
+Using these attributes can cause user-visible disruption.  Whether this
+level of disruption will be acceptable depends on the mix of clients
+in use on your network and how they are configured.  If ongoing compliance
+verification is not desired, one might use these attributes during captive
+portal self-registration only, or one might only use these attributes
+on test machines when evaluating supplicant software.
+
+Before using these attributes, first define additional tls sections
+in the eap module configuration, and give them descriptive names.
+Each such definition can be set up to use a different certificate than
+the normal certificate offered by the service.  Four such alternate
+TLS definitions are supported, so that different attack vectors of
+various degrees of difficulty may be assayed.  For example, an amateur
+attacker might use a self-signed certificate, while a more advanced
+assailant might have acquired a compromised CA-signed certificate that has
+expired, or a valid CA-signed certificate stolen from another provider.
+
+        tls-config badcert_expired {
+                private_key_file = ${certdir}/expiredcert.key
+                certificate_file = ${certdir}/expiredcert.crt
+                ...
+        }
+
+Do note that even though these certificates are bogus, that does not
+mean one should be casual about keeping the private key file secret.
+
+Next, in the PEAP or TTLS configuration, define the "alt_tls_1",
+"alt_tls_2", "alt_tls_3", and "alt_tls_4" configuration values to
+refer to the names of the added tls configurations:
+
+       peap {
+                ...
+
+                alt_tls_1 = badcert_noca
+                alt_tls_2 = badcert_expired
+                alt_tls_3 = badcert_badsubject
+                alt_tls_4 = badcert_wrongca
+       }
+
+The control:EAP-TLS-Offer-Alt attribute may then be set to one
+of the string values "alt_tls_1", "alt_tls_2", "alt_tls_3",
+or "alt_tls_4" to select an alternative tls configuration, and thus
+simulate a MITM attack.  This will cause some clients disruption,
+which may even require them to re-enter credentials, so it is not
+something that should be done very often.  A simple example would
+be to place the following in your authorize section:
+
+       if (! State) {  # This is a fresh session
+         if ("%{rand: 1000}" == "4") {  # Only test occasionally
+           update control {
+             EAP-TLS-Offer-Alt := "alt_tls_4"
+           }
+           offeredcertlog
+         }
+       }
+
+In post-auth, the control:EAP-TLS-Taken-Alt attribute will be
+set if the PEAP or TTLS authentication continued into Phase 2,
+even though the client should have terminated the session.
+This can be used as such:
+
+        if ("%{control:EAP-TLS-Taken-Alt}") {
+                badcertlog
+        }
+
+In the above examples, offeredcertlog and badcertlog are linelog
+definitions which cause our similated MITM attacks to be logged,
+and logs any client that fails to verify a certficate along with
+the name of the TLS definition which the client accepted:
+
+	linelog offeredcertlog {
+        	reference = "always"
+        	format = "Offering Client %{Calling-Station-Id} bogus cert %{control:EAP-TLS-Offer-Alt})"
+        	filename = "syslog"
+        	always {
+        	}
+	}
+
+	linelog badcertlog {
+        	reference = "always"
+        	format = "Client %{Calling-Station-Id} failed to verify cert (completed tunnel with bad TLS config %{control:EAP-TLS-Taken-Alt})"
+        	filename = "syslog"
+        	always {
+        	}
+	}
