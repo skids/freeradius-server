@@ -2025,6 +2025,11 @@ static fr_protocol_t master_listen[RAD_LISTEN_MAX] = {
 	{ 0, "dhcp", 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 #endif
 
+#ifdef WITH_UNBOUND
+	/* libunbound embedded server pseudo-protocol */
+	{ 0, "unbound", 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+#endif
+
 #ifdef WITH_COMMAND_SOCKET
 	/* TCP command socket */
 	{ RLM_MODULE_INIT, "control", sizeof(fr_command_socket_t), NULL,
@@ -2629,6 +2634,9 @@ static const FR_NAME_NUMBER listen_compare[] = {
 #endif
 #ifdef WITH_COA
 	{ "coa",	RAD_LISTEN_COA },
+#endif
+#ifdef WITH_UNBOUND
+	{ "unbound",	RAD_LISTEN_UNBOUND },
 #endif
 	{ NULL, 0 },
 };
