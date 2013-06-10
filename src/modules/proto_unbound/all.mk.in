@@ -1,10 +1,10 @@
 TARGETNAME	:= @targetname@
 
 ifneq "$(TARGETNAME)" ""
-TARGET		:= $(TARGETNAME).a
+TARGET		:= proto_$(TARGETNAME).a
 endif
 
-SOURCES		:= $(TARGETNAME).c rbtree.c
+SOURCES		:= $(TARGETNAME).c
 
 SRC_CFLAGS	:= @mod_cflags@
 TGT_LDLIBS	:= @mod_ldflags@
