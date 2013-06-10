@@ -352,6 +352,21 @@ if test "x$WITH_DHCP" = "xyes"; then
 	AC_DEFINE(WITH_DHCP, [1], [define if you want DHCP support])
 fi
 
+dnl extra argument: --with-unbound
+WITH_UNBOUND=yes
+AC_ARG_WITH(unbound,
+[  --with-unbound             Compile in embedded unbound DNS. (default=yes)],
+[ case "$withval" in
+    yes)
+        ;;
+    *)
+	WITH_UNBOUND=no
+  esac ]
+)
+if test "x$WITH_UNBOUND" = "xyes"; then
+	AC_DEFINE(WITH_UNBOUND, [1], [define to embed unbound DNS client])
+fi
+
 dnl #
 dnl #  Allow the user to specify a list of modules to be linked
 dnl #  statically to the server.

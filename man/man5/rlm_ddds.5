@@ -1,0 +1,148 @@
+.\"     # DS - begin display
+.de DS
+.RS
+.nf
+.sp
+..
+.\"     # DE - end display
+.de DE
+.fi
+.RE
+.sp
+..
+.TH rlm_ddds 5 "8 May 2013" "" "FreeRADIUS Module"
+.SH NAME
+rlm_ddds \- FreeRADIUS Module
+.SH DESCRIPTION
+When instantiated, the \fIrlm_ddds\fP module provides a template
+describing how to do DNS lookups to locate radius server pools,
+closely approximating the behavior described in RFC 3958,
+RFC 2782, and draft-ietf-radext-dynamic-discovery.
+.PP
+This module may be used to perform RADIUS routing in a fully meshed
+federation environment, or may be used in conjunction with a local
+DNS server to simply provide dynamic definitions of RADIUS server
+load-balancing, redundancy, and fallback pools.
+.PP
+Each instance of rlm_ddds may take the following behavioral parameters:
+.IP wkr_xlat
+This string provides an expression (known as the "well-known rule") which
+is evaluated for every access request.  The result of this expression is
+looked up in DNS.  The default value is "%{tolower:%{idn:%{Realm}}}" which
+will take the realm of the current request and convert it to internationalized
+domain format (rlm_idn must be loaded in its default configuration.)  This
+is suitable for fully meshed federations.
+
+Were one to want all requests to go to the same pools of servers regardless
+of the realm, wkr_xlat could be set to a static DNS owner name.  This
+expression is also evaluated internally whenever results from DNS lookups
+are retrieved, so it is important that any referenced attributes have stable
+values.
+
+Note that any xlat used here should produce a case-folded result.
+.IP naptr
+This boolean is set by default.  When it is set, the result of wkr_xlat
+is looked up as a NAPTR in DNS.  When it is not set, no NAPTR lookups
+are performed by this instance.  Results that do not conform to S-NAPTR
+format will be considered a configuration error and ignored.
+.IP naptr_service
+This string is used to filter the results of all NAPTR lookups performed
+by this instance.  When an S-NAPTR RR that does not contain the designated
+string in the service field is encountered, it is ignored.  The default
+is "aaa+auth".  For EDUROAM, this should be set to "x-eduroam".
+.IP naptr_protocol
+This string is used to filter the results of all NAPTR lookups performed
+by this instance.  When an S-NAPTR RR that does not contain the designated
+string in a protocol field is encountered, it is ignored.  The default
+value is "radius.tls".
+.IP naptr_port
+This integer defaults to 2083.  When an S-NAPTR with an "a" flag is
+encountered, this value is used as the port number on which to contact the
+referenced server(s).
+.IP srv
+This boolean is set by default.  When it is set, the result of wkr_xlat
+is used as a target to look up a SRV in DNS.  If "naptr" is also set,
+this lookup will only occur should the NAPTR lookups fail to produce a
+pool of servers.  When it is not set, SRV lookups are performed by
+this instance only if an S-NAPTR record is found with an "s" flag.
+.IP srv_service
+This string is used to create the full owner name of a locally requested
+SRV target before looking it up in DNS.  The default value is "radiustls".
+.IP srv_protocol
+This string is used to create the full owner name of a locally requested
+SRV target before looking it up in DNS.  The default value is "tcp".
+.IP fallback
+This integer defaults to 0.  If it is set to 0, no lookup of a bare A/AAAA
+record occurs as a fallback when SRV RRs cannot be found.  If the value is
+set to non-zero this lookup will occur and any servers in the result which
+are contacted will be contacted on the port specified in this value.
+
+RFC 2782 specifies this fallback lookup to occur in the event that a SRV
+RRs are not forthcoming from DNS, but actually doing so would result in
+attempts to contact any IP mapped to the bare realm name via RADIUS.  This
+is unlikely to be desired in many federation schemes.
+
+However, setting this value to a non-zero port can be useful when also
+specifying a realm-independent name in "wkr_xlat", if there are A records
+belonging to that owner which define a RADIUS load-balancing pool and the
+DNS administrator does not want to create a NAPTR or SRV for them.
+
+If both "naptr" and "srv" options are false, and "fallback" is non-zero,
+No SRV lookup will occur, but the value in "fallback" will still be used
+as the port on which to contact the hosts whose addresses appear in
+A or AAAA records for the name produced by "wkr_xlat".
+.IP ipv4
+This boolean is set by default.  When set, the DNS will be queried for
+"A" records when directed to by a S-NAPTR RR with an "a" flag, a SRV RR,
+or fallback.
+.IP ipv6
+This boolean is not set by default.  When set, the DNS will be queried for
+"AAAA" records when directed to by a S-NAPTR RR with an "a" flag, a SRV RR,
+or fallback.
+.IP unbound
+This string is used to find an unbound client (listener) defined elsewhere
+in the configuration file.  All DNS traffic for this DDDS instance will be sent
+and received through the particular listener so named.  The default value
+is "unbound".  There is a sample unbound listener named "unbound" defined
+in the default configuration, to show how it may be done for now.  This
+is likely to change, however.
+.IP must_dnssec
+This boolean is not set by default.  When set, only DNSSEC-validated responses
+will be honored.  This would only be used if every member of the federation has
+validated zones, or when using a realm-independent "wkr_xlat".
+.PP
+Each instance of rlm_ddds also supports the following tuning parameters,
+which hopefully you will never need to use:
+.IP negative_ttl
+In the event that DNS fails in a way that yields no negative TTL, this value
+will be applied to the failure state.  This specifically applies to
+draft-ietf-radext-dynamic-discovery section 2.3.4.  The default is 300 seconds.
+.IP min_ttl
+DNS responses with TTLs smaller than this value will be treated as though
+they had been received with this value.  The default is 60 seconds.
+.IP max_ttl
+DNS responses with TTLs larger than this value will be treated as though
+they had been received with this value.  The default is 3600 seconds.
+.IP expiry_ttl
+DDNS result sets will still be kept fresh by periodically renewing expired
+DNS records and re-running the DDDS algorithm to deal with any changes
+encountered.  They will remain refreshed until they have gone unused for
+this number of seconds.  The default is 21600 seconds (6 hours).
+.IP deadbeat_ttl
+It should never happen, but if the embedded DNS clients fail to respond
+to every request we send (if even with a failure or error) for this number
+of seconds the search will be restarted.  This is kept track of per-search.
+The default value is 180 seconds.
+.PP
+.SH FILES
+.I /etc/raddb/radiusd.conf
+.PP
+.SH REFERENCES
+draft-ietf-radext-dynamic-discovery, RFC3958, RFC2782
+.PP
+.SH "SEE ALSO"
+.BR radiusd (8),
+.BR radiusd.conf (5)
+.SH AUTHOR
+Brian S. Julin, bjulin@clarku.edu
+
