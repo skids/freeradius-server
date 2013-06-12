@@ -51,13 +51,10 @@ typedef struct ddds_state {
 	 *	lookup specified by draft-ietf-radext-dynamic-discovery.
 	 *
 	 * TODO: dynamically allocate at least the DNS owner names,
-	 * because they can chew up a goodly amount of RAM.
-	 *
-	 * Also, yes, I know, the rest of the world prefers arrays-of-
-	 * structures-of-fields versus arrays-of-fields.  I find this way
-	 * easier to work with myself, so it will remain like this
-	 * until after the code is passing a robust test suite.
-	 * (There are arguments pro/con both ways per data locality.)
+	 * because they can chew up a goodly amount of RAM.  Perhaps
+	 * rearrange tables into structs (there are arguments pro/con both
+	 * ways per data locality.)  That can all wait until after
+	 * a robust test suite is in effect.
 	 */
 #define MAX_NAPTRS 32	/* Limit on number of NAPTRs on all followed limbs */
 
@@ -175,6 +172,7 @@ typedef struct rlm_ddds_t {
 	struct ub_ctx* ubctx;	/* context of that unbound listener. */
 
 	rbtree_t *tops;		/* All our searches and results */
+	char *name2;		/* We need to know our own name */
 
 	/* Options */
 
@@ -245,7 +243,7 @@ static const CONF_PARSER mod_config[] = {
 	{"srv", PW_TYPE_BOOLEAN,
 	 offsetof(rlm_ddds_t, want_srv), NULL, "yes" },
 	{"fallback", PW_TYPE_INTEGER,
-	 offsetof(rlm_ddds_t, fallback), NULL, "2083" },
+	 offsetof(rlm_ddds_t, fallback), NULL, "0" },
 	{"negative_ttl", PW_TYPE_INTEGER,
 	 offsetof(rlm_ddds_t, negative_ttl), NULL, "300" },
 	{"min_ttl", PW_TYPE_INTEGER,
@@ -1524,6 +1522,7 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
  *
  *	Returns:
  *	index of next NAPTR to follow,
+ *	or -1 if backtracking is exhausted (wait for TTL expiry to resume.)
  *	or -2 if a TTL expiry was detected.
  */
 static int backtrack_naptr(UNUSED rlm_ddds_t *inst, ddds_top_t *top, int ttl)
@@ -1548,7 +1547,7 @@ static int backtrack_naptr(UNUSED rlm_ddds_t *inst, ddds_top_t *top, int ttl)
 		if (top->state.top_time > now.tv_sec + ttl) {
 			top->state.top_time = now.tv_sec + ttl;
 		}
-		return 0;
+		return -1;
 	}
 
 	/* TTL expiry/rollback takes precedence to backtracking. */
@@ -1557,6 +1556,12 @@ static int backtrack_naptr(UNUSED rlm_ddds_t *inst, ddds_top_t *top, int ttl)
 		return idx;
 	}
 
+	/*
+	 * TODO:
+	 * Cannot happen with qtype 0 passed to plumb_naptr above.
+	 * Kept in case we want to get fancier here.
+	 */
+#if 0
 	/* If TTL expiry/rollback moved the cursor, we are done. */
 	if (!(flags[del] & NAPTR_DIVE)) {
 		while (!(flags[--idx] & NAPTR_DIVE)) {
@@ -1566,6 +1571,7 @@ static int backtrack_naptr(UNUSED rlm_ddds_t *inst, ddds_top_t *top, int ttl)
 		}
 		return idx;
 	}
+#endif
 
 	/* Current result negative TTL sets an upper bar on expiry */
 	q_time = now.tv_sec + ttl;
@@ -1590,7 +1596,7 @@ again:
 		if (top->state.top_time > now.tv_sec + ttl) {
 			top->state.top_time = now.tv_sec + ttl;
 		}
-		return 0;
+		return -1;
 	}
 
 	/* Remove the cursor */
@@ -1712,10 +1718,10 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 		if (bad) {
 		backtrack:
 			res = backtrack_naptr(inst, top, result->ttl);
-			if (res < 0) {
+			if (res != -1) {
 				triage = 1;
-				goto badresult;
 			}
+			goto badresult;
 		}
 		else {
 			res = new_naptr(inst, top, result);
@@ -2122,6 +2128,263 @@ static int top_copy_cb(void *Data, void *context)
 }
 
 /*
+ *	Pack DDDS results into RADIUS attributes which can be used
+ *	by the pool/lb/tls code to establish new connections or choose
+ *	existing ones.
+ *
+ *	We use the following attributes, all but the first of which exist
+ *	solely for this purpose.  Most attributes occur the same number of
+ *	times and the whole batch should be read as a table with attributes
+ *	defining the fields/columns and indexes defining the rows.
+ *
+ *	Home-Server-Pool: contains a string unique per pool.  That is,
+ *	the string may appear more than one time -- all entries with the
+ *	same string should be considered part of the same pool.  Entries
+ *	are sorted primarily by a field in this attribute, in order of
+ *	preference, so the first listings with the same value in this string
+ *	define the first group of servers to try, and the second would only be
+ *	used if those prove incapable, etc.  The value contains the full module
+ *	name of the ddds instance (e.g. "ddds.name2"), followed by a colon,
+ *	followed by a unique (by pool) integer, followed by a colon,
+ *	followed by the result of the well-known rule.  This latter
+ *	part may be used in RADSec certificate validation as appropriate
+ *	to the federation PKI scheme.
+ *
+ *	Dynamic-Pool-Weight: The cumulative probability with which this
+ *	particular service should be chosen.  In the absence of any server
+ *	affinity strategy, a random RADIUS integer should be chosen, then
+ *	compared to each Dynamic-Pool-Weight in the order in which they
+ *	appear.  When an entry is reached for which Dynamic-Pool-Weight
+ *	is less then or equal to the randomly chosen number, that entry
+ *	should be tried.  The last entry in a pool is always 2^32-1.
+ *
+ *	Dynamic-Pool-IP-Address, Dynamic-Pool-IPv6-Address: only one of
+ *	these entries per row will have a value.  The other will be set
+ *	to INADDR_ANY or the unspecified IPv6 address, respectively.
+ *	This address is to be used to contact this server.
+ *
+ *	Dynamic-Pool-IP-Protocol: for now will be either TCP or UDP.
+ *
+ *	Dynamic-Pool-Port: This TCP/UDP port should be used to contact the
+ *	server.  Whether or not to use TLS should be inferred from this value
+ *	for now in the normal manner.  The upper unused bits of this value are
+ *	reserved for flags in case that system of inference fails us.
+ *
+ *	Dynamic-Pool-Host-Name: This is the final host name which yeilded
+ *	the address in Dynamic-Pool-IP-Address/Dynamic-Pool-IPv6-Address.
+ *	Depending on the federation PKI scheme, it may be useful for
+ *	RADSec certificate validation.  It should be used when logging
+ *	server-specific events related to this server.
+ *
+ *	Dynamic-Pool-Alias1/Dynamic-Pool-Alias2: These strings are not
+ *      part of the table.  They are populated when CNAME/DNAME aliases
+ *	or NAPTR hops that are encountered during NAPTR or SRV resolution.
+ *	Dynamic-Pool-Alias2 will sometimes contain a single value with
+ *	an alias encountered in a response to an SRV query, encountered
+ *	during A/AAAA resolution that happenned as a fallback after a SRV
+ *	lookup failure, or an alias encountered during A/AAAA resolution
+ *	resulting from an S-NAPTR with an "a" flag.  Dynamic-Pool-Alias1
+ *	will contain many values showing all owners including CNAME/DNAME
+ *	aliases encountered during intermediate NAPTR lookups.  Note
+ *	that A/AAAA aliases encountered when looked up due to a SRV are
+ *	ignored because they are illegal.  These strings are provided in
+ *	case they are needed for PKI validation purposes.
+ *
+ *	NOTE: The *top here is a copy of the rbtree item which we will
+ *	be throwing away.  So we can scratchpad with it if needed.
+ */
+static void map_avp(rlm_ddds_t *inst, ddds_top_t *top, int pidx,
+		    int weight, in_addr_t ipv4, struct in6_addr *ipv6,
+		    int port, char *owner, REQUEST *request)
+{
+ 	VALUE_PAIR      *vp, **vps;
+	char pname[512];
+	int size;
+
+	vps = &request->config_items;
+
+	size = snprintf(pname, 512,
+			"ddds.%s:%i:%s", inst->name2, pidx, top->query.owner);
+	rad_assert(size < 512);
+	vp = radius_paircreate(request, vps, PW_HOME_SERVER_POOL, 0);
+	vp->vp_strvalue = talloc_strdup(vp, pname);
+
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_HOST_NAME, 0);
+	vp->vp_strvalue = talloc_strdup(vp, owner);
+
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_WEIGHT, 0);
+	vp->vp_integer = weight;
+
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_IP_ADDRESS, 0);
+	vp->vp_ipaddr = ipv4;
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_IPV6_ADDRESS, 0);
+	if (ipv6) {
+		vp->vp_ipv6addr = *ipv6;
+	}
+	else {
+		vp->vp_ipv6addr = in6addr_any;
+	}
+
+	/* TODO: glean this from inst->srv_proto and whatnot */
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_IP_PROTOCOL, 0);
+	vp->vp_integer = 6;
+
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_PORT, 0);
+	vp->vp_integer = port;
+}
+
+static void pool_map(rlm_ddds_t *inst, ddds_top_t *top, int pidx, REQUEST *request)
+{
+	int idx;
+	int accum = 0;
+	int weight_sum = 0;
+	int len_sum = 0;
+
+	/*
+	 * If a use case arises, we will need to rework this.
+	 */
+	rad_assert(MAX_SRVS < 128);
+
+	/* Find aggregate values */
+	for (idx = pidx; idx >= 0; idx--) {
+		if (top->state.sprios[idx] != top->state.sprios[pidx]) {
+			break;
+		}
+		/* Skip over any entries that failed resolution */
+		if (top->state.aaaalens[idx] <= 0
+		    && top->state.alens[idx] <= 0) {
+			continue;
+		}
+		/*
+		 *	RFC2782 gives a somewhat defective algorithm for
+		 *	ensuring weight 0 gets hit sometimes, but rarely.
+		 *
+		 *	We simply add one to each weight to get a similar
+		 *	effect.  We can do this because our ints have bits
+		 *	to spare.  It isn't perfect for tiny weights but
+		 *	most DNS admins know to use lumps of 10 or so.
+		 */
+		weight_sum += top->state.sweights[idx] + 1;
+
+		if (top->state.alens[idx] > 0) {
+			len_sum += top->state.alens[idx];
+		}
+		if (top->state.aaaalens[idx] > 0) {
+			len_sum += top->state.aaaalens[idx];
+		}
+	}
+	if (!len_sum || !weight_sum) {
+		/* This entire priority rung failed resolution. */
+		return;
+	}
+	rad_assert(weight_sum > 0);
+	rad_assert(weight_sum <= MAX_SRVS * 65536);
+
+	/* TODO: Is it worth it to merge dups? */
+	for (idx = pidx; idx >= 0; idx--) {
+		uint64_t q;
+		int aidx;
+		int len;
+
+		if (top->state.sprios[idx] != top->state.sprios[pidx]) {
+			break;
+		}
+		/* Skip over any entries that failed resolution */
+		len = top->state.alens[idx];
+		if (len < 0) {
+			len = top->state.aaaalens[idx];
+		}
+		else {
+			if (top->state.aaaalens[idx] > 0) {
+				len += top->state.aaaalens[idx];
+			}
+		}
+		if (len <= 0) {
+			continue;
+		}
+
+		q = 2147483647;
+		q *= top->state.sweights[idx] + 1;
+		q /= len;
+		q /= weight_sum;
+		for (aidx = 0; aidx < top->state.alens[idx]; aidx++) {
+			accum += q >> 15;
+			if (--len_sum < 1) {
+				accum = 65536;
+			}
+			map_avp(inst, top, pidx, accum,
+				top->state.as[top->state.aidxs[idx]
+					      + aidx].s_addr,
+				NULL,
+				top->state.sports[idx],
+				top->state.snames[idx],
+				request);
+		}
+		for (aidx = 0; aidx < top->state.aaaalens[idx]; aidx++) {
+			accum += q >> 15;
+			if (--len_sum < 1) {
+				accum = 65536;
+			}
+			map_avp(inst, top, pidx, accum, INADDR_ANY,
+				&top->state.aaaas[top->state.aaaaidxs[idx]
+						  + aidx],
+				top->state.sports[idx],
+				top->state.snames[idx],
+				request);
+		}
+	}
+}
+
+static void top_map(rlm_ddds_t *inst, ddds_top_t *top, REQUEST *request)
+{
+ 	VALUE_PAIR      *vp, **vps;
+	int pool;
+	int idx;
+
+	/* Handle synthetic SRV */
+	if (top->state.sprios[0] == -1) {
+		top->state.sweights[0] = 0;
+		pool_map(inst, top, 0, request);
+		return;
+	}
+	/* Sorted already by prio/weight in reverse order.  Find end. */
+	for (idx = 0; idx < MAX_SRVS; idx++) {
+		if (top->state.sports[idx] == -1) {
+			break;
+		}
+	}
+	if (idx >= MAX_SRVS) {
+		/* No results. */
+		return;
+	}
+	pool = 65536;
+	while (idx >= 0) {
+		if (pool != top->state.sprios[idx]) {
+		  pool = top->state.sprios[idx];
+		  pool_map(inst, top, idx, request);
+		}
+		idx--;
+	}
+
+	vps = &request->config_items;
+
+	for (idx = 0; idx < MAX_NAPTRS; idx++) {
+		if (!(top->state.nflags[idx] & NAPTR_USED)) {
+			break;
+		}
+		if (top->state.nflags[idx] & NAPTR_DIVE) {
+			vp = radius_paircreate(request, vps,
+					       PW_DYNAMIC_POOL_ALIAS1, 0);
+			vp->vp_strvalue =
+				talloc_strdup(vp, top->state.nnames[idx]);
+		}
+	}
+
+	vp = radius_paircreate(request, vps, PW_DYNAMIC_POOL_ALIAS2, 0);
+	vp->vp_strvalue = talloc_strdup(vp, top->state.srv_cname);
+}
+
+/*
  * Kick off a DDDS resolution, or use a cached one.
  */
 static rlm_rcode_t mod_autz(void *instance, REQUEST *request)
@@ -2257,6 +2520,8 @@ static rlm_rcode_t mod_autz(void *instance, REQUEST *request)
 		DEBUG("Waiting %i us", tries[try]);
 		usleep(tries[try]);
 		try++;
+		/* In case we do not have threads */
+		ub_process(inst->ubctx);
 	} while (1);
 	/* TODO: review/choose appropriate RLM_MODULE_ return codes. */
 	if (try >= 6) {
@@ -2264,7 +2529,8 @@ static rlm_rcode_t mod_autz(void *instance, REQUEST *request)
 		DEBUG("DDDS for %s was too slow.", top->query.owner);
 		return RLM_MODULE_NOOP;
 	}
-	DEBUG("TODO map current results to control attributes");
+	top_map(inst, top, request);
+	debug_pair_list(request->config_items);
 	return RLM_MODULE_UPDATED;
 }
 
@@ -2335,6 +2601,8 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 	if (inst->deadbeat_ttl < inst->min_ttl) {
 		ERROR("Deadbeat TTL smaller than minimum TTL");
 	}
+
+	inst->name2 = talloc_strdup(inst, cf_section_name2(conf));
 
 	inst->tops = rbtree_create(ddds_top_compare_query, ddds_top_free,
 				   RBTREE_FLAG_LOCK);

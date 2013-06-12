@@ -175,6 +175,14 @@ VALUE	Module-Return-Code		updated			8
 ATTRIBUTE	Packet-Original-Timestamp		1109	date
 ATTRIBUTE	SQL-Table-Name				1110	string
 ATTRIBUTE	Home-Server-Pool			1111	string
+ATTRIBUTE	Dynamic-Pool-Weight			1112	integer
+ATTRIBUTE	Dynamic-Pool-IP-Address			1113	ipaddr
+ATTRIBUTE	Dynamic-Pool-IPv6-Address		1114	ipv6addr
+ATTRIBUTE	Dynamic-Pool-IP-Protocol		1115	integer
+ATTRIBUTE	Dynamic-Pool-Port			1116	integer
+ATTRIBUTE	Dynamic-Pool-Host-Name			1117	string
+ATTRIBUTE	Dynamic-Pool-Alias1			1118	string
+ATTRIBUTE	Dynamic-Pool-Alias2			1119	string
 
 ATTRIBUTE	FreeRADIUS-Client-IP-Address		1120	ipaddr
 ATTRIBUTE	FreeRADIUS-Client-IPv6-Address		1121	ipv6addr
