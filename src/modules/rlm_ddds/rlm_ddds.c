@@ -2236,7 +2236,7 @@ static void map_avp(rlm_ddds_t *inst, ddds_top_t *top, int pidx,
 static void pool_map(rlm_ddds_t *inst, ddds_top_t *top, int pidx, REQUEST *request)
 {
 	int idx;
-	int accum = 0;
+	unsigned int accum = 0;
 	int weight_sum = 0;
 	int len_sum = 0;
 
@@ -2303,14 +2303,14 @@ static void pool_map(rlm_ddds_t *inst, ddds_top_t *top, int pidx, REQUEST *reque
 			continue;
 		}
 
-		q = 2147483647;
+		q = 4294967296;
 		q *= top->state.sweights[idx] + 1;
 		q /= len;
 		q /= weight_sum;
 		for (aidx = 0; aidx < top->state.alens[idx]; aidx++) {
-			accum += q >> 15;
+			accum += q;
 			if (--len_sum < 1) {
-				accum = 65536;
+				accum = 4294967295;
 			}
 			map_avp(inst, top, pidx, accum,
 				top->state.as[top->state.aidxs[idx]
@@ -2321,9 +2321,9 @@ static void pool_map(rlm_ddds_t *inst, ddds_top_t *top, int pidx, REQUEST *reque
 				request);
 		}
 		for (aidx = 0; aidx < top->state.aaaalens[idx]; aidx++) {
-			accum += q >> 15;
+			accum += q;
 			if (--len_sum < 1) {
-				accum = 65536;
+				accum = 4294967295;
 			}
 			map_avp(inst, top, pidx, accum, INADDR_ANY,
 				&top->state.aaaas[top->state.aaaaidxs[idx]
