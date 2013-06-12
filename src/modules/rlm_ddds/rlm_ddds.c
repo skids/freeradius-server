@@ -763,8 +763,8 @@ static int do_as(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub, int ba
 		}
 		else {
 			/* Enforce RFC2782: SRV RRs cannot point to aliases */
-			DEBUG("Bad SRV delegation: '%s' points to alias '%s'",
-			      ub->qname, ub->canonname);
+			WDEBUG("Bad SRV RR '%s' of '%s' points to alias '%s'",
+			       ub->qname, top->query.owner, ub->canonname);
 			bad = 1;
 			goto pedigree;
 		}
@@ -960,12 +960,14 @@ aaaagain:
 	for (cnt = ri = 0; (rr = (unsigned char *)ub->data[ri]); ri++){
 		if (ub->qtype == 1) {
 			if (aidx + cnt >= MAX_A_RRS) {
-				DEBUG("Too many A records");
+				WDEBUG("Too many A RRs for '%s' of '%s'",
+				       ub->qname, top->query.owner);
 				goto bad;
 			}
 			/* TODO: other checks such as this */
 			if (!(*(rr) | *(rr+1) | *(rr+2) | *(rr+3))) {
-				DEBUG("Invalid A record points to anycast");
+				WDEBUG("A RR '%s' of '%s' yields anycast",
+				       ub->qname, top->query.owner);
 				goto bad;
 			}
 			/*
@@ -977,7 +979,8 @@ aaaagain:
 		}
 		if (ub->qtype == 28) {
 			if (aidx + cnt >= MAX_AAAA_RRS) {
-				DEBUG("Too many AAAA records");
+				WDEBUG("Too many AAAA RRs for '%s' of '%s'",
+				       ub->qname, top->query.owner);
 				goto bad;
 			}
 			/* TODO: clean this up */
@@ -985,7 +988,8 @@ aaaagain:
 			      *(rr+4) | *(rr+5) | *(rr+6) | *(rr+7) |
 			      *(rr+8) | *(rr+9) | *(rr+10) | *(rr+11) |
 			      *(rr+12) | *(rr+13) | *(rr+14) | *(rr+15))) {
-				DEBUG("Invalid A record points to anycast");
+				WDEBUG("AAAA RR '%s' of '%s' yields anycast",
+				       ub->qname, top->query.owner);
 				goto bad;
 			}
 			/* TODO: checks as above and v6 specific */
