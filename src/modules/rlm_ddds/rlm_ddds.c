@@ -410,7 +410,7 @@ static int top_triage(rlm_ddds_t *inst, ddds_top_t *top)
 /*
  *	Baseline the state of a DDDS search.
  */
-static void top_reset(rlm_ddds_t *inst, ddds_top_t *top)
+static void top_reset(rlm_ddds_t *inst, ddds_top_t *top, int used)
 {
 	struct timeval now;
 	int del = 0;
@@ -418,7 +418,9 @@ static void top_reset(rlm_ddds_t *inst, ddds_top_t *top)
 	gettimeofday(&now, NULL);
 
 	top->state.top_time = now.tv_sec + inst->max_ttl - 1;
-	top->state.last_used = now.tv_sec;
+	if (used) {
+		top->state.last_used = now.tv_sec;
+	}
 	top->state.last_launch = now.tv_sec;
 
 	if ((inst->want_srv || !inst->want_naptr) &&
@@ -430,6 +432,7 @@ static void top_reset(rlm_ddds_t *inst, ddds_top_t *top)
 		 */
 		top->state.ntimes[0] = now.tv_sec + inst->max_ttl;
 		top->state.nflags[0] = NAPTR_SYNTH | NAPTR_SRV;
+		top->state.nnames[0][0] = '\0';
 		strcat(top->state.nnames[0], "_");
 		strcat(top->state.nnames[0], inst->srv_service);
 		strcat(top->state.nnames[0], "._");
@@ -574,7 +577,7 @@ static int plumb_naptr(rlm_ddds_t *inst, ddds_top_t *top, int type, char const *
 	 *	Check the well-known NAPTR for expiry.
 	 */
 	if (top->state.top_time < now.tv_sec) {
-		top_reset(inst, top);
+		top_reset(inst, top, 0);
 
 		/* Are we loading a new top NAPTR right now? */
 		if (type == 35 && !strcmp(owner, top->query.owner)) {
@@ -584,6 +587,11 @@ static int plumb_naptr(rlm_ddds_t *inst, ddds_top_t *top, int type, char const *
 
 		if (inst->want_naptr) {
 			DEBUG2("Top NAPTR expired for '%s'", top->query.owner);
+			return -2;
+		}
+		else if (inst->want_srv) {
+			DEBUG2("Top SRV '%s' expired for '%s'",
+			       top->state.nnames[0], top->query.owner);
 			return -2;
 		}
 	}
@@ -1102,7 +1110,6 @@ static int top_check(void *context, void *Data)
 		return 0;
         }
 
-	/* TODO: check TTLs on the A/AAAA records */
 	for(idx = 0; (idx < MAX_SRVS
 			    && top->state.sports[idx] != -1); idx++) {
 		/*
@@ -1111,18 +1118,29 @@ static int top_check(void *context, void *Data)
 		 *	temporarily in an inconsistent state.  That's OK,
 		 *	we are consistent by the time we release the lock.
 		 */
-		if (top->state.aidxs[idx] != -1 && inst->want_v4) {
+		if (top->state.alens[idx] != -1 && inst->want_v4) {
 			if (now.tv_sec > top->state.atimes[idx]) {
-				nuke_as(top, aidxs[idx], alens[idx]);
+				DEBUG2("A RRSet '%s' timed out for '%s'",
+				       top->state.snames[idx],
+				       top->query.owner);
+				if (top->state.aidxs[idx] != -1) {
+					nuke_as(top, aidxs[idx], alens[idx]);
+				}
 				aidxs[idx] = -1;
 				alens[idx] = -1;
 				ub_ask(inst, top->state.snames[idx],
 				       1, 1, top, ub_cb, NULL);
 			}
 		}
-		if (top->state.aaaaidxs[idx] != -1 && inst->want_v6) {
+		if (top->state.aaaalens[idx] != -1 && inst->want_v6) {
 			if (now.tv_sec > top->state.aaaatimes[idx]) {
-				nuke_aaaas(top, aaaaidxs[idx], aaaalens[idx]);
+				DEBUG2("AAAA RRSet '%s' timed out for '%s'",
+				       top->state.snames[idx],
+				       top->query.owner);
+				if (top->state.aaaaidxs[idx] != -1) {
+					nuke_aaaas(top, aaaaidxs[idx],
+						   aaaalens[idx]);
+				}
 				aaaaidxs[idx] = -1;
 				aaaalens[idx] = -1;
 				ub_ask(inst, top->state.snames[idx],
@@ -1184,7 +1202,6 @@ static int new_srvs(UNUSED rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *
 		/* TODO: can we and do we want to filter these? */
 
 		/* TODO: empty or otherwise invalid owner? */
-
 		if (rrlabels_tostr((char *)rr,
 				   top->state.snames[cnt]) < 0) {
 			DEBUG("Format violation in SRV '%s' for '%s'",
@@ -1201,13 +1218,14 @@ static int new_srvs(UNUSED rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *
 		}
 
 		if (++cnt > MAX_SRVS - 1) {
+			ri++;
 			break;
 		}
 	}
 	/* Did we exceed the array? */
 	if (ub->data[ri]) {
-		DEBUG("Owner '%s' for '%s' has too many RRs",
-		      ub->qname, top->query.owner);
+		WDEBUG("SRV '%s' for '%s' has too many RRs",
+		       ub->qname, top->query.owner);
 		return -1;
 	}
 	/* Mark the first unused entry, if any. */
@@ -1861,7 +1879,8 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 		if (res < 0) {
 			/*
 			 *	Leave the query abandoned.  It will be
-			 *	retried when lb code complains.
+			 *	retried when lb code complains, or
+			 *	TTLs time out.
 			 */
 			return res;
 		}
@@ -2073,7 +2092,7 @@ static ddds_top_t *top_alloc(rlm_ddds_t *inst, char const *owner)
 	}
 	strcpy(top->query.owner, owner);
 
-	top_reset(inst, top);
+	top_reset(inst, top, 1);
 
 	return top;
 }
