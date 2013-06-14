@@ -590,7 +590,7 @@ static int plumb_naptr(rlm_ddds_t *inst, ddds_top_t *top, int type, char const *
 			return -2;
 		}
 		else if (inst->want_srv) {
-			DEBUG2("Top SRV '%s' expired for '%s'",
+			DEBUG2("Simulated parent expiry of SRV '%s' for '%s'",
 			       top->state.nnames[0], top->query.owner);
 			return -2;
 		}
@@ -1812,6 +1812,9 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 				ub_ask(inst, top->state.snames[0],
 				       28, 1, top, ub_cb, NULL);
 			}
+
+			/* We could have come here via fallback.  Emit debug */
+			if (bad) goto badresult;
 			return 0;
 		}
 	}
