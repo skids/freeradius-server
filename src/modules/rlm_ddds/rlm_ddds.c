@@ -1328,7 +1328,7 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 	if (idx >= MAX_NAPTRS) {
 		cnt = idx;
 	toomany:
-		ERROR("Too many NAPTR RRs for %s", top->query.owner);
+		WDEBUG("Too many NAPTR RRs for %s", top->query.owner);
 		idx = -1; /* Will be return code. */
 		goto installttl;
 	}
@@ -1773,7 +1773,7 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 			       35, 1, top, ub_cb, NULL);
 			return 0;
 		}
-		else if (flags[res] & NAPTR_SRV) {
+		else if ((flags[res] & NAPTR_SRV) == NAPTR_SRV) {
 			/* Found an "s" terminator.  Go get a SRV. */
 			ub_ask(inst, top->state.nnames[res],
 			       33, 1, top, ub_cb, NULL);
