@@ -1638,6 +1638,7 @@ again:
 	if (flags[idx] & NAPTR_FORE) {
 		/* Proceed as if we just got an RR for our parent. */
 		q_time = min_time;
+		idx++;
 		goto again;
 	}
 
