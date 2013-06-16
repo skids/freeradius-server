@@ -401,7 +401,7 @@ static int top_triage(rlm_ddds_t *inst, ddds_top_t *top)
 		ub_ask(inst, top->state.nnames[dive], 33, 1, top, ub_cb, NULL);
 	}
 	else {
-		/* Should not happen */
+		/* Should not happen.  Should be handled as synth SRV. */
 		ERROR("FIXME: Found expired NAPTR with 'a' flag.");
 	}
 	return 0;
@@ -1296,11 +1296,16 @@ static int new_srvs(UNUSED rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *
 	return 0;
 }
 
-/* Add successful NAPTR query results to the search tree */
+/*
+ * Add successful NAPTR query results to the search tree.
+ * Returns the index of the next NAPTR to look into.
+ * Or -2 if there was TTL rollback that requires further action.
+ * Or -3 if a backtrack is needed.
+ */
 static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 {
 	int idx = 0;
-	int cnt, ri;
+	int aidx, cnt, ri;
 	unsigned char *rr;
 	int *flags = top->state.nflags;
 	time_t *times = top->state.ntimes;
@@ -1323,6 +1328,8 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 	    (idx == 1 &&
 	     ((top->state.nflags[0] & NAPTR_SYNTH) == NAPTR_SYNTH))) {
 		top->state.top_time = now.tv_sec + ttl;
+		/* Overwrite the default NAPTR if we actually get RRs */
+		idx = 0;
 	}
 
 	if (idx >= MAX_NAPTRS) {
@@ -1330,15 +1337,8 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 	toomany:
 		WDEBUG("Too many NAPTR RRs for %s", top->query.owner);
 		idx = -1; /* Will be return code. */
+		aidx = cnt;
 		goto installttl;
-	}
-
-	/* Handle the special case of CNAME/DNAME aliases. */
-	if (ub->canonname) {
-		times[idx] = now.tv_sec + ttl;
-		flags[idx] |= NAPTR_FORE | NAPTR_DIVE | NAPTR_USED;
-		strcpy(top->state.nnames[idx], ub->canonname);
-		idx++;
 	}
 
 	/*
@@ -1443,7 +1443,16 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 		if (idx + cnt >= MAX_NAPTRS) {
 			goto toomany;
 		}
-		flags[idx + cnt] |= NAPTR_USED;
+
+		flags[idx + cnt] = NAPTR_USED;
+		/* Handle the special case of CNAME/DNAME aliases. */
+		if (cnt == 0 && ub->canonname) {
+			times[idx] = now.tv_sec + ttl;
+			flags[idx] |= NAPTR_FORE | NAPTR_DIVE;
+			strcpy(top->state.nnames[idx], ub->canonname);
+			idx++;
+		}
+		flags[idx + cnt] = NAPTR_USED;
 		if (f) {
 			flags[idx + cnt] |= NAPTR_TERM;
 			if (f == 's') {
@@ -1451,6 +1460,12 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 			}
 		}
 		top->state.nnames[idx + cnt][0] = '\0';
+		/*
+		 * TODO: we may need to preserve default NAPTR depending
+		 * on how newer drafts decide to deal with the following
+		 * failure modes.  If so we need to test the unpack above
+		 * in the filtering section before we modify the entry.
+		 */
 		if (rrlabels_tostr((char *)rr,
 				   top->state.nnames[idx + cnt]) < 0) {
 			goto badformat;
@@ -1502,28 +1517,49 @@ static int new_naptr(rlm_ddds_t *inst, ddds_top_t *top, struct ub_result *ub)
 		}
 	} while (sorted == 0);
 
-	/* Place the tree structure marker and cursor */
-	idx += cnt - 1;
-	flags[idx] |= NAPTR_FORE | NAPTR_DIVE;
+	/* Did we come up empty-handed after filtering? */
+	if (!cnt) {
+		/* Should we use the default NAPTR? */
+		if (idx == 0 && (flags[0] & NAPTR_SYNTH) == NAPTR_SYNTH) {
+			DEBUG2("Using default NAPTR for '%s'",
+			       top->query.owner);
+			cnt = 1;
+		}
+	}
+	if (cnt) {
+		/* Place the tree structure marker and cursor */
+		idx += cnt - 1;
+		flags[idx] |= NAPTR_FORE | NAPTR_DIVE;
+	}
 
 	/* Go back and find our parent. */
-	cnt = idx;
+	aidx = idx;
  installttl:
-	while (--cnt >= 0) {
-		if (flags[cnt] & NAPTR_DIVE) {
+	while (--aidx >= 0) {
+		if (flags[aidx] & NAPTR_DIVE) {
 			break;
 		}
 	}
-	if (cnt >= 0) {
+	if (aidx >= 0) {
 		/* Keep track of positive TTL */
-		times[cnt] = now.tv_sec + ttl;
+		times[aidx] = now.tv_sec + ttl;
 	}
 
+	if (!cnt) {
+		/* RFC 3958 Section 2.2.4. */
+		DEBUG("Backtracking '%s' due to no matching RRs for '%s'",
+		      top->query.owner, top->state.nnames[aidx]);
+		return -3;
+	}
 
+	/* TODO: delete this */
 	DEBUG("Top %s expires at %li", top->query.owner, top->state.top_time);
 	for (cnt = 0; cnt < MAX_NAPTRS; cnt++) {
 	  DEBUG("NAPTR:\t%x\t%i\t%s", flags[cnt], (int)times[cnt],
 		top->state.nnames[cnt]);
+	  if (!(flags[cnt] & NAPTR_USED) && cnt > 5) {
+	  	break;
+	  }
 	}
 
 	return idx;
@@ -1738,7 +1774,32 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 
 	/* Handle answers to NAPTR queries. */
 	if (result->qtype == 35) {
-		if (bad) {
+		/*
+		 * When want_srv is set we are supposed to resort to
+		 * a default SRV (per draft-ietf-radext-dynamic-discovery)
+		 * lookup when:
+		 *
+		 * 1) If after filtering for service and protocol there
+		 *    are no RRs remaining in the first NAPTR query.
+		 * 2) If the first NAPTR query returns no results, but
+		 *    not if "name resolution returns with error."
+		 *
+		 * It is less than clear what constitutes "no results"
+		 * and what constitutes an error -- moreso when DNSSec
+		 * failure modes are considered.
+		 *
+		 * So these criteria may change.
+		 */
+	  	if (inst->want_srv && (result->nxdomain || !result->havedata)
+		    && !(flags[1] & NAPTR_USED)) {
+			rad_assert((flags[0] & NAPTR_SYNTH) == NAPTR_SYNTH);
+			/* This takes care of 2) above */
+			res = 0;
+			flags[0] |= NAPTR_DIVE | NAPTR_FORE;
+			DEBUG2("Using default NAPTR for '%s' due to DNS empty",
+			       top->query.owner);
+		}
+	  	else if (bad) {
 		backtrack:
 			res = backtrack_naptr(inst, top, result->ttl);
 			if (res != -1) {
@@ -1751,6 +1812,9 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 			if (res == -2) {
 				triage = 1;
 				goto triage;
+			}
+			if (res == -3) {
+				goto backtrack;
 			}
 			if (res < 0) {
 				/*
@@ -1767,7 +1831,6 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 		}
 
 		/* TODO: consolidate with triage here? */
-
 		if (!(flags[res] & NAPTR_TERM)) {
 			/* Descend into the next NAPTR level */
 			ub_ask(inst, top->state.nnames[res],
@@ -1865,6 +1928,9 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 				goto backtrack;
 			}
 			target++;
+
+			DEBUG2("Using fallback A/AAAA lookup for '%s' of '%s'",
+			       result->qname, top->query.owner);
 
 			/* Add a synthetic SRV.  Use negative TTL. */
 			strcpy(top->state.snames[0], target);
@@ -1969,7 +2035,8 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 		if (result->canonname) {
 			DEBUG2("Empty result for alias '%s' to '%s'",
 			       result->qname, result->canonname);
-		} else {
+		}
+		else {
 			DEBUG2("Empty result for query '%s'", result->qname);
 		}
 		goto triage;
