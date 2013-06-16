@@ -880,7 +880,6 @@ aaaagain:
 
  pedigree:
 	/* Find a matching SRV.  Assumes idx is one past the last used SRV. */
-	DEBUG2("Searching for SRV RRs leading to %s", ub->qname);
 	while(--idx >= 0) {
 		if (strcmp(top->state.snames[idx], ub->qname)) {
 			continue;
@@ -891,7 +890,6 @@ aaaagain:
 			DEBUG2("Already knew addresses of '%s'", ub->qname);
 			return 0;
 		}
-		DEBUG2("Found a match at idx %i", idx);
 		break;
 	}
 	/* The response was for something we do not need anymore. */
@@ -1707,6 +1705,74 @@ again:
 }
 
 /*
+ *	Emit debug logs for any errors from a DNS query.
+ *	Returns 0 if no error and hence no log emitted, -1 otherwise.
+ */
+static int log_dns_error(rlm_ddds_t *inst, struct ub_result *ub, int err) {
+	char buf[16];
+
+	switch (ub->qtype) {
+	case 1:
+		strcpy(buf, "A");
+		break;
+	case 28:
+		strcpy(buf, "AAAA");
+		break;
+	case 33:
+		strcpy(buf, "SRV");
+		break;
+	case 35:
+		strcpy(buf, "NAPTR");
+		break;
+	default:
+		if (ub->qtype >= 0 || ub->qtype < 65536) {
+			sprintf(buf, "(type %i)", ub->qtype);
+		}
+		else {
+			strcpy(buf, "(?)");
+		}
+	}
+
+	if (err) {
+		DEBUG("Query type %i for %s called back with error: %s",
+		      ub->qtype, ub->qname, ub_strerror(err));
+		return -1;
+	}
+	if (ub->bogus) {
+		DEBUG("Bogus DNS response (for %s query '%s'): %s",
+		      buf, ub->qname, ub->why_bogus);
+		return -1;
+	}
+	if (!ub->secure && inst->must_dnssec) {
+		DEBUG2("Insecure DNS response for %s query '%s'",
+		       buf, ub->qname);
+		return -1;
+	}
+	if (ub->nxdomain) {
+		if (ub->canonname) {
+			DEBUG2("NXDOMAIN for alias '%s' to '%s'",
+			       ub->qname, ub->canonname);
+		} else {
+			DEBUG2("NXDOMAIN for %s query '%s'", buf, ub->qname);
+		}
+		return -1;
+	}
+
+	if (!ub->havedata) {
+		if (ub->canonname) {
+			DEBUG2("Empty result for alias '%s' to '%s'",
+			       ub->qname, ub->canonname);
+		}
+		else {
+			DEBUG2("Empty result for %s query '%s'",
+			       buf, ub->qname);
+		}
+		return -1;
+	}
+	return 0;
+}
+
+/*
  *	All DNS responses eventually make it through layers to here.
  *
  *	This is called only when inst.tops lock is held.
@@ -1769,6 +1835,9 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 	/* Consolidate sundry failure modes. */
 	bad = (c->err || result->bogus || result->nxdomain ||
 	       (!result->havedata) || (!result->secure && inst->must_dnssec));
+	if (bad) {
+		log_dns_error(inst, result, c->err);
+	}
 
         gettimeofday(&now, NULL);
 
@@ -2006,47 +2075,14 @@ static int ub_cb_rbtree_cb(void *Data, void *context)
 	}
 
  badresult:
-
-	if (c->err) {
-		DEBUG("Query type %i for %s called back with error: %s",
-		      result->qtype, result->qname, ub_strerror(c->err));
-		goto triage;
-	}
-	if (result->bogus) {
-		DEBUG("Bogus DNS response (for query '%s'): %s",
-		      result->qname, result->why_bogus);
-		goto triage;
-	}
-	if (!result->secure && inst->must_dnssec) {
-		DEBUG2("Insecure DNS response for query '%s'", result->qname);
-		goto triage;
-	}
-	if (result->nxdomain) {
-		if (result->canonname) {
-			DEBUG2("NXDOMAIN for alias '%s' to '%s'",
-			       result->qname, result->canonname);
-		} else {
-			DEBUG2("NXDOMAIN for query '%s'", result->qname);
+	if (bad) {
+	triage:
+		if (triage) {
+			top_triage(inst, top);
 		}
-		goto triage;
-	}
-
-	if (!result->havedata) {
-		if (result->canonname) {
-			DEBUG2("Empty result for alias '%s' to '%s'",
-			       result->qname, result->canonname);
-		}
-		else {
-			DEBUG2("Empty result for query '%s'", result->qname);
-		}
-		goto triage;
+		return -1;
 	}
 	return 0;
- triage:
-	if (triage) {
-		top_triage(inst, top);
-	}
-	return -1;
 }
 
 static void ub_cb(void *my_arg, int err, struct ub_result *result)
