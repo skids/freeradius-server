@@ -194,6 +194,9 @@ typedef struct rlm_ddds_t {
 	int expiry_ttl;
 	int deadbeat_ttl;
 
+	/* Calculated from other options */
+	int checkup_interval;
+
 	/* for now, for debugging. */
 	pthread_t pthread;
 
@@ -2670,8 +2673,7 @@ static void *walk_tops_loop(void *handle)
 	rlm_ddds_t *inst = handle;
 	while(1) {
 		rbtree_walk(inst->tops, InOrder, top_check, inst);
-		DEBUG("TICK");
-		usleep(10000000);
+		sleep(inst->checkup_interval);
 	}
 	return NULL;
 }
@@ -2730,6 +2732,15 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 
 	if (inst->deadbeat_ttl < inst->min_ttl) {
 		ERROR("Deadbeat TTL smaller than minimum TTL");
+	}
+
+	/* Figure out how often to walk the rbtree and check things. */
+	inst->checkup_interval = inst->max_ttl * 9 / 10;
+	if (inst->checkup_interval > inst->deadbeat_ttl / 5) {
+		inst->checkup_interval = inst->deadbeat_ttl / 5;
+	}
+	if (inst->checkup_interval > inst->expiry_ttl) {
+		inst->checkup_interval = inst->expiry_ttl;
 	}
 
 	inst->name2 = talloc_strdup(inst, cf_section_name2(conf));
