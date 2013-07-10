@@ -31,7 +31,11 @@ is evaluated for every access request.  The result of this expression is
 looked up in DNS.  The default value is "%{tolower:%{idn:%{Realm}}}" which
 will take the realm of the current request and convert it to internationalized
 domain format (rlm_idn must be loaded in its default configuration.)  This
-is suitable for fully meshed federations.
+is suitable for fully meshed federations and complies to the draft
+specification section 3.4.1 for constructing input to the DDDS algorithm.
+Note that to fully comply with the draft specification, care should be
+taken not to send realms that end in a dot to this module, and to blackhole
+such realms instead.
 
 Were one to want all requests to go to the same pools of servers regardless
 of the realm, wkr_xlat could be set to a static DNS owner name.  This
