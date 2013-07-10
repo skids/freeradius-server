@@ -73,7 +73,7 @@ static int unbound_parse_ctx(CONF_SECTION *cs, rad_listen_t *this)
 		if (cf_section_name2(cs)) {
 			name2 = cf_section_name2(cs);
 		}
-		cp = cf_pair_find(cs, "unbound_conf");
+		cp = cf_pair_find(cs, "filename");
 	}
 
 	if (cp) {
